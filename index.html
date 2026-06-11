@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sauko · Frente a la Gran Pirámide de Cholula</title>
+  <meta name="description" content="Sauko — Cocina y mixología de autor con la vista más privilegiada de Cholula, frente a la Gran Pirámide al atardecer." />
+
+  <!-- Tipografía -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@200;300;400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Mapa oscuro interactivo (Leaflet + tiles CartoDB Dark, sin API key) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Tailwind (Play CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink:    '#0a0705',   // negro cálido
+            ember:  '#1a0f0a',   // negro tostado
+            sauko:  {
+              amber:  '#e8852b',  // naranja atardecer
+              gold:   '#d4a04a',  // dorado
+              clay:   '#c2410c',  // naranja profundo
+              violet: '#5b2a6b',  // violeta crepúsculo
+              plum:   '#2d1430',  // violeta oscuro
+              cream:  '#f4e9d8',  // crema
+            },
+          },
+          fontFamily: {
+            display: ['"Cormorant Garamond"', 'serif'],
+            sans: ['Outfit', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    html { scroll-behavior: smooth; }
+    body { background:#0a0705; }
+    ::selection { background:#e8852b; color:#0a0705; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 9px; }
+    ::-webkit-scrollbar-track { background:#0a0705; }
+    ::-webkit-scrollbar-thumb { background:#3a2418; border-radius:9px; }
+    ::-webkit-scrollbar-thumb:hover { background:#e8852b; }
+
+    /* Cielo atardecer Cholula — fallback 100% confiable (sin depender de imágenes) */
+    .cholula-sky {
+      background:
+        radial-gradient(120% 90% at 20% 12%, rgba(91,42,107,.55) 0%, rgba(91,42,107,0) 55%),
+        radial-gradient(140% 120% at 85% 18%, rgba(45,20,48,.6) 0%, rgba(45,20,48,0) 60%),
+        linear-gradient(180deg, #2d1430 0%, #5b2a6b 24%, #c2410c 52%, #e8852b 70%, #d4a04a 86%, #1a0f0a 100%);
+    }
+    /* Silueta de pirámide + iglesia, en CSS puro */
+    .pyramid-silhouette {
+      background:
+        /* iglesia (Santuario) sobre la cúspide */
+        linear-gradient(180deg, #0a0705 0%, #0a0705 100%) ,
+        #0a0705;
+      clip-path: polygon(0 100%, 0 78%, 38% 78%, 44% 62%, 47% 62%, 47% 50%, 50% 44%, 53% 50%, 53% 62%, 56% 62%, 62% 78%, 100% 78%, 100% 100%);
+    }
+
+    .map-dark .leaflet-container { background:#0a0705; outline:none; }
+    .leaflet-control-attribution { background:rgba(10,7,5,.7)!important; color:#7c6a5a!important; }
+    .leaflet-control-attribution a { color:#d4a04a!important; }
+    .leaflet-bar a { background:#1a0f0a!important; color:#e8852b!important; border-color:#3a2418!important; }
+    .leaflet-bar a:hover { background:#2d1430!important; }
+
+    .grain:after{
+      content:""; position:fixed; inset:0; pointer-events:none; z-index:60; opacity:.04;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    .text-balance { text-wrap: balance; }
+  </style>
+</head>
+
+<body class="bg-ink text-sauko-cream font-sans antialiased grain">
+  <div id="root"></div>
+
+  <!-- React 18 + Babel + Framer Motion (UMD, sin build) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/framer-motion@11.0.8/dist/framer-motion.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useRef } = React;
+    const M = window.Motion || {};
+    // Si Framer Motion no carga, un fallback que solo renderiza el elemento (sin animación)
+    const motion = M.motion || new Proxy({}, {
+      get: (_, tag) => ({ children, className, style }) =>
+        React.createElement(tag, { className, style }, children),
+    });
+    const AnimatePresence = M.AnimatePresence || (({ children }) => children);
+    const useScroll = M.useScroll;
+    const useTransform = M.useTransform;
+
+    /* ============================================================
+       DATOS DEL MENÚ
+       En producción estos arreglos vendrían de Supabase:
+       const { data } = await supabase.from('menu').select('*')
+       ============================================================ */
+    const MIXOLOGIA = [
+      { id:'mx1', nombre:'Atardecer de Cholula', desc:'Mezcal espadín, reducción de tuna roja, romero quemado y sal de gusano cítrica.', precio:'$240', etiqueta:'Insignia' },
+      { id:'mx2', nombre:'Tonatiuh', desc:'Tequila reposado infusionado en cempasúchil, cordial de maracuyá y aire de naranja.', precio:'$220' },
+      { id:'mx3', nombre:'Niebla del Volcán', desc:'Ginebra de hierbas locales, tónica de pepino-serrano y humo frío de copal.', precio:'$230' },
+      { id:'mx4', nombre:'Quetzal', desc:'Ron añejo, cordial de chía y hoja santa, espuma de vainilla de Papantla.', precio:'$210' },
+      { id:'mx5', nombre:'Barro Negro', desc:'Mezcal ancestral, café de olla clarificado, cacao y piloncillo ahumado.', precio:'$250', etiqueta:'De otro nivel' },
+      { id:'mx6', nombre:'Flor de Obsidiana', desc:'Vodka de jamaica, lavanda, cítricos y un destello de prosecco.', precio:'$215' },
+    ];
+
+    const COCINA = [
+      { id:'ck1', nombre:'Tuétano a la Brasa', desc:'Hueso de res al carbón, salsa macha de la casa, tortilla de maíz azul.', precio:'$280', etiqueta:'Para compartir' },
+      { id:'ck2', nombre:'Pulpo en su Tinta', desc:'Pulpo sellado, puré de frijol ayocote, recado negro y aceite de chile costeño.', precio:'$340' },
+      { id:'ck3', nombre:'Mole de la Abuela', desc:'Mole poblano de 24 ingredientes, pato confitado y ajonjolí tostado.', precio:'$320', etiqueta:'Tradición' },
+      { id:'ck4', nombre:'Esquites Reinventados', desc:'Elote rostizado, espuma de epazote, polvo de chicharrón y queso añejo.', precio:'$160' },
+      { id:'ck5', nombre:'Costilla 12 Horas', desc:'Short rib braseado en pulque, puré de camote y cebolla encurtida.', precio:'$360', etiqueta:'Insignia' },
+      { id:'ck6', nombre:'Higo & Cabra', desc:'Higos asados, queso de cabra local, miel de maguey y nuez garapiñada.', precio:'$180' },
+    ];
+
+    /* ============================ COMPONENTES REUTILIZABLES ============================ */
+
+    // Botón reutilizable
+    function Boton({ children, variant='solid', href='#reservas', className='', ...rest }) {
+      const base = 'inline-flex items-center justify-center gap-2 rounded-full px-7 py-3 text-sm font-medium tracking-wide transition-all duration-300 will-change-transform';
+      const styles = {
+        solid:   'bg-sauko-amber text-ink hover:bg-sauko-gold shadow-[0_8px_30px_-8px_rgba(232,133,43,.6)] hover:shadow-[0_10px_40px_-6px_rgba(232,133,43,.8)] hover:-translate-y-0.5',
+        ghost:   'border border-sauko-gold/40 text-sauko-cream hover:border-sauko-amber hover:bg-sauko-amber/10',
+        link:    'text-sauko-gold hover:text-sauko-amber underline-offset-4 hover:underline px-0 py-0',
+      };
+      return (
+        <a href={href} className={`${base} ${styles[variant]} ${className}`} {...rest}>{children}</a>
+      );
+    }
+
+    // Encabezado de sección reutilizable
+    function TituloSeccion({ kicker, titulo, sub }) {
+      return (
+        <Reveal>
+          <div className="text-center max-w-2xl mx-auto mb-12 md:mb-16">
+            {kicker && <p className="text-sauko-amber tracking-[0.35em] text-xs uppercase mb-4">{kicker}</p>}
+            <h2 className="font-display text-4xl md:text-6xl text-sauko-cream leading-[1.05] text-balance">{titulo}</h2>
+            {sub && <p className="mt-5 text-sauko-cream/60 text-base md:text-lg font-light leading-relaxed">{sub}</p>}
+          </div>
+        </Reveal>
+      );
+    }
+
+    // Wrapper de animación al hacer scroll (reutilizable)
+    function Reveal({ children, delay=0, y=28 }) {
+      if (!motion) return <div>{children}</div>;
+      return (
+        <motion.div
+          initial={{ opacity:0, y }}
+          whileInView={{ opacity:1, y:0 }}
+          viewport={{ once:true, margin:'-80px' }}
+          transition={{ duration:0.7, delay, ease:[0.22,1,0.36,1] }}
+        >{children}</motion.div>
+      );
+    }
+
+    // Imagen con carga progresiva (blur-up) — optimiza percepción de carga
+    function ImagenSuave({ src, fallback, alt, className='' }) {
+      const [cargada, setCargada] = useState(false);
+      return (
+        <div className={`relative overflow-hidden ${className}`} style={{ background: fallback }}>
+          <img
+            src={src} alt={alt} loading="lazy" decoding="async"
+            onLoad={()=>setCargada(true)}
+            onError={(e)=>{ e.currentTarget.style.display='none'; }}
+            className={`h-full w-full object-cover transition-all duration-700 ${cargada ? 'opacity-100 scale-100 blur-0' : 'opacity-0 scale-105 blur-md'}`}
+          />
+        </div>
+      );
+    }
+
+    // Tarjeta de menú reutilizable
+    function TarjetaMenu({ item, img, fallback }) {
+      return (
+        <Reveal>
+          <motion.article
+            whileHover={ motion ? { y:-6 } : {} }
+            transition={{ type:'spring', stiffness:260, damping:20 }}
+            className="group relative overflow-hidden rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent backdrop-blur-sm"
+          >
+            <div className="relative h-48 md:h-52 overflow-hidden">
+              <ImagenSuave src={img} fallback={fallback} alt={item.nombre} className="h-full w-full transition-transform duration-700 group-hover:scale-110" />
+              <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/30 to-transparent"></div>
+              {item.etiqueta &&
+                <span className="absolute top-4 left-4 rounded-full bg-ink/70 backdrop-blur px-3 py-1 text-[11px] tracking-widest uppercase text-sauko-gold border border-sauko-gold/30">
+                  {item.etiqueta}
+                </span>}
+            </div>
+            <div className="p-6">
+              <div className="flex items-baseline justify-between gap-4">
+                <h3 className="font-display text-2xl text-sauko-cream">{item.nombre}</h3>
+                <span className="font-sans text-sauko-amber text-lg whitespace-nowrap">{item.precio}</span>
+              </div>
+              <p className="mt-2 text-sm text-sauko-cream/55 leading-relaxed font-light">{item.desc}</p>
+            </div>
+          </motion.article>
+        </Reveal>
+      );
+    }
+
+    /* Imágenes placeholder (Unsplash .webp). Si no cargan, se ve el gradiente fallback. */
+    const IMG = (id) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=800&q=70&fm=webp`;
+    const drinkImgs = ['photo-1514362545857-3bc16c4c7d1b','photo-1551024709-8f23befc6f87','photo-1536935338788-846bb9981813','photo-1470337458703-46ad1756a187','photo-1574671928146-5c89a8e1cd3c','photo-1485808191679-5f86510681a2'];
+    const foodImgs  = ['photo-1546069901-ba9599a7e63c','photo-1565299624946-b28f40a0ae38','photo-1504674900247-0877df9cc836','photo-1432139555190-58524dae6a55','photo-1467003909585-2f8a72700288','photo-1414235077428-338989a2e8c0'];
+    const fbDrink = 'linear-gradient(135deg,#2d1430,#5b2a6b 60%,#c2410c)';
+    const fbFood  = 'linear-gradient(135deg,#1a0f0a,#c2410c 70%,#e8852b)';
+
+    /* ============================ NAVBAR ============================ */
+    function Navbar() {
+      const [open, setOpen] = useState(false);
+      const [scrolled, setScrolled] = useState(false);
+      useEffect(()=>{
+        const onScroll = ()=> setScrolled(window.scrollY > 40);
+        window.addEventListener('scroll', onScroll);
+        return ()=> window.removeEventListener('scroll', onScroll);
+      },[]);
+      const links = [['Inicio','#inicio'],['Menú','#menu'],['Ubicación','#ubicacion'],['Historia','#historia']];
+      return (
+        <header className={`fixed top-0 inset-x-0 z-50 transition-all duration-500 ${scrolled ? 'bg-ink/85 backdrop-blur-md border-b border-white/5 py-3' : 'py-5'}`}>
+          <nav className="mx-auto max-w-7xl px-5 flex items-center justify-between">
+            <a href="#inicio" className="flex items-center gap-2 group">
+              <span className="font-display text-2xl md:text-3xl tracking-wide text-sauko-cream">Sauko</span>
+              <span className="hidden sm:block h-1 w-1 rounded-full bg-sauko-amber group-hover:scale-150 transition-transform"></span>
+            </a>
+            <div className="hidden md:flex items-center gap-8">
+              {links.map(([t,h])=> <a key={h} href={h} className="text-sm text-sauko-cream/70 hover:text-sauko-amber tracking-wide transition-colors">{t}</a>)}
+              <Boton variant="solid" className="!py-2 !px-5">Reservar</Boton>
+            </div>
+            <button onClick={()=>setOpen(v=>!v)} className="md:hidden text-sauko-cream p-2" aria-label="Menú">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                {open ? <path d="M6 6l12 12M18 6L6 18"/> : <path d="M4 7h16M4 12h16M4 17h16"/>}
+              </svg>
+            </button>
+          </nav>
+
+          {AnimatePresence &&
+            <AnimatePresence>
+              {open &&
+                <motion.div
+                  initial={{ opacity:0, height:0 }} animate={{ opacity:1, height:'auto' }} exit={{ opacity:0, height:0 }}
+                  className="md:hidden overflow-hidden bg-ink/95 backdrop-blur-lg border-t border-white/5">
+                  <div className="px-6 py-6 flex flex-col gap-5">
+                    {links.map(([t,h])=> <a key={h} href={h} onClick={()=>setOpen(false)} className="text-lg text-sauko-cream/80 hover:text-sauko-amber">{t}</a>)}
+                    <Boton variant="solid" onClick={()=>setOpen(false)}>Reservar mesa</Boton>
+                  </div>
+                </motion.div>}
+            </AnimatePresence>}
+        </header>
+      );
+    }
+
+    /* ============================ HERO ============================ */
+    function Hero() {
+      const ref = useRef(null);
+      let y1 = null, opacity = null;
+      if (useScroll && useTransform) {
+        const { scrollYProgress } = useScroll({ target: ref, offset:['start start','end start'] });
+        y1 = useTransform(scrollYProgress, [0,1], ['0%','35%']);
+        opacity = useTransform(scrollYProgress, [0,0.8], [1,0]);
+      }
+      const Wrap = motion ? motion.div : 'div';
+      return (
+        <section id="inicio" ref={ref} className="relative min-h-[100svh] flex items-center justify-center overflow-hidden">
+          {/* Cielo de atardecer (CSS, siempre presente) */}
+          <Wrap style={ y1 ? { y:y1 } : {}} className="absolute inset-0 cholula-sky"></Wrap>
+          {/* Estrellas / brillo superior */}
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(232,133,43,.35),transparent_55%)]"></div>
+          {/* Silueta de pirámide + iglesia */}
+          <div className="pyramid-silhouette absolute bottom-0 inset-x-0 h-[42vh] md:h-[48vh] z-10"></div>
+          {/* Crucecita de la iglesia */}
+          <div className="absolute z-10 left-1/2 -translate-x-1/2 bottom-[calc(42vh-2px)] md:bottom-[calc(48vh-2px)]">
+            <div className="w-[2px] h-5 bg-ink mx-auto"></div>
+          </div>
+          <div className="absolute inset-0 bg-gradient-to-b from-ink/30 via-transparent to-ink z-10"></div>
+
+          {/* Contenido */}
+          <Wrap style={ opacity ? { opacity } : {}} className="relative z-20 text-center px-5 max-w-3xl">
+            <motion.p
+              initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ duration:0.8, delay:0.2 }}
+              className="text-sauko-cream/80 tracking-[0.4em] uppercase text-xs md:text-sm mb-6">
+              Frente a la Gran Pirámide · Cholula
+            </motion.p>
+            <motion.h1
+              initial={{ opacity:0, y:30 }} animate={{ opacity:1, y:0 }} transition={{ duration:1, delay:0.35, ease:[0.22,1,0.36,1] }}
+              className="font-display text-6xl sm:text-7xl md:text-8xl lg:text-9xl text-sauko-cream leading-[0.95] text-balance">
+              Cena con vista<br/><span className="italic text-sauko-gold">a la eternidad</span>
+            </motion.h1>
+            <motion.p
+              initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ duration:0.9, delay:0.6 }}
+              className="mt-7 text-sauko-cream/75 text-base md:text-xl font-light max-w-xl mx-auto leading-relaxed">
+              Cocina reconfortante y mixología de autor, servidas mientras el sol se despide del santuario más antiguo de América.
+            </motion.p>
+            <motion.div
+              initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ duration:0.9, delay:0.8 }}
+              className="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
+              <Boton variant="solid" href="#reservas">Reservar una mesa</Boton>
+              <Boton variant="ghost" href="#menu">Ver el menú</Boton>
+            </motion.div>
+          </Wrap>
+
+          {/* Indicador de scroll */}
+          <motion.div
+            animate={{ y:[0,10,0] }} transition={{ repeat:Infinity, duration:2 }}
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-sauko-cream/50">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+          </motion.div>
+        </section>
+      );
+    }
+
+    /* ============================ MENÚ ============================ */
+    function Menu() {
+      const [tab, setTab] = useState('mix');
+      const items = tab === 'mix' ? MIXOLOGIA : COCINA;
+      const imgs = tab === 'mix' ? drinkImgs : foodImgs;
+      const fb = tab === 'mix' ? fbDrink : fbFood;
+      return (
+        <section id="menu" className="relative py-24 md:py-32 px-5">
+          <div className="mx-auto max-w-7xl">
+            <TituloSeccion
+              kicker="El Menú"
+              titulo="Sabores de otro nivel"
+              sub="Una carta viva que celebra el maíz, el mezcal y el fuego — reinterpretados con técnica contemporánea." />
+
+            {/* Tabs */}
+            <Reveal>
+              <div className="flex justify-center mb-12">
+                <div className="inline-flex rounded-full border border-white/10 bg-white/[0.03] p-1.5">
+                  {[['mix','Mixología'],['cocina','Cocina']].map(([k,t])=>(
+                    <button key={k} onClick={()=>setTab(k)}
+                      className={`relative rounded-full px-6 md:px-8 py-2.5 text-sm tracking-wide transition-colors ${tab===k?'text-ink':'text-sauko-cream/60 hover:text-sauko-cream'}`}>
+                      {tab===k && motion &&
+                        <motion.span layoutId="tabPill" className="absolute inset-0 rounded-full bg-sauko-amber" transition={{ type:'spring', stiffness:300, damping:26 }}></motion.span>}
+                      <span className="relative z-10">{t}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </Reveal>
+
+            {/* Grid */}
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {items.map((item,i)=> <TarjetaMenu key={item.id} item={item} img={IMG(imgs[i])} fallback={fb} />)}
+            </div>
+
+            <Reveal>
+              <p className="text-center mt-12 text-sauko-cream/50 text-sm font-light">
+                ¿Cambias el coctel estrella cada temporada? Esta carta se actualiza desde Supabase sin tocar el código.
+              </p>
+            </Reveal>
+          </div>
+        </section>
+      );
+    }
+
+    /* ============================ UBICACIÓN (mapa oscuro) ============================ */
+    function Ubicacion() {
+      const mapRef = useRef(null);
+      useEffect(()=>{
+        if (!window.L || !mapRef.current || mapRef.current._leaflet_id) return;
+        const coords = [19.05787, -98.30175]; // Gran Pirámide de Cholula
+        const map = L.map(mapRef.current, { scrollWheelZoom:false, zoomControl:true }).setView(coords, 16);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          attribution:'&copy; OpenStreetMap &copy; CARTO', maxZoom:19,
+        }).addTo(map);
+        const icon = L.divIcon({
+          className:'', iconSize:[26,26], iconAnchor:[13,13],
+          html:'<div style="width:18px;height:18px;border-radius:50%;background:#e8852b;box-shadow:0 0 0 6px rgba(232,133,43,.25),0 0 22px rgba(232,133,43,.9);border:2px solid #f4e9d8;"></div>',
+        });
+        L.marker(coords, { icon }).addTo(map).bindPopup('<b>Sauko</b><br/>Frente a la Gran Pirámide');
+      },[]);
+      return (
+        <section id="ubicacion" className="relative py-24 md:py-32 px-5 bg-ember/40">
+          <div className="mx-auto max-w-7xl">
+            <TituloSeccion kicker="Cómo llegar" titulo="A los pies de la pirámide" />
+            <div className="grid lg:grid-cols-5 gap-8 items-stretch">
+              <Reveal delay={0.05}>
+                <div className="lg:col-span-2 h-full rounded-2xl border border-white/5 bg-white/[0.03] p-8 flex flex-col justify-center">
+                  <h3 className="font-display text-3xl text-sauko-cream mb-6">Sauko</h3>
+                  {[
+                    ['Dirección','Av. Morelos s/n, frente al Santuario, San Pedro Cholula, Puebla.'],
+                    ['Horario','Mar–Dom · 14:00 a 23:30 hrs'],
+                    ['Reservas','+52 222 000 0000'],
+                    ['Correo','hola@sauko.mx'],
+                  ].map(([k,v])=>(
+                    <div key={k} className="mb-5">
+                      <p className="text-sauko-amber text-xs tracking-[0.3em] uppercase mb-1">{k}</p>
+                      <p className="text-sauko-cream/80 font-light">{v}</p>
+                    </div>
+                  ))}
+                  <Boton variant="ghost" href="https://maps.google.com/?q=Gran+Piramide+de+Cholula" target="_blank" rel="noopener" className="mt-2 self-start">Abrir en Google Maps</Boton>
+                </div>
+              </Reveal>
+              <Reveal delay={0.1}>
+                <div className="lg:col-span-3 map-dark rounded-2xl overflow-hidden border border-white/10 min-h-[360px] lg:h-full">
+                  <div ref={mapRef} style={{ width:'100%', height:'100%', minHeight:'360px' }}></div>
+                </div>
+              </Reveal>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    /* ============================ HISTORIA ============================ */
+    function Historia() {
+      return (
+        <section id="historia" className="relative py-24 md:py-32 px-5 overflow-hidden">
+          <div className="absolute -top-40 right-0 w-[40rem] h-[40rem] rounded-full bg-sauko-violet/20 blur-[120px] pointer-events-none"></div>
+          <div className="absolute -bottom-40 left-0 w-[40rem] h-[40rem] rounded-full bg-sauko-clay/15 blur-[120px] pointer-events-none"></div>
+          <div className="relative mx-auto max-w-4xl text-center">
+            <TituloSeccion kicker="Nuestra Historia" titulo="Nacimos mirando hacia arriba" />
+            <Reveal>
+              <div className="space-y-6 text-lg md:text-xl text-sauko-cream/70 font-light leading-relaxed text-balance">
+                <p>Sauko nació de una pregunta simple: <span className="text-sauko-gold">¿qué se siente cenar frente a la pirámide más grande del mundo?</span> Durante siglos, Cholula ha sido lugar de encuentro, de ofrenda y de fiesta. Quisimos sumar un capítulo más a esa historia.</p>
+                <p>Cada plato es un homenaje al maíz, al mezcal y a las manos que han cultivado este valle por generaciones. Cada coctel, una forma de embotellar el atardecer que tiñe de oro el Santuario de los Remedios.</p>
+                <p>No vendemos solo una cena. Ofrecemos un instante: el momento en que el sol se oculta tras el volcán y la pirámide se ilumina. Eso es Sauko.</p>
+              </div>
+            </Reveal>
+            <Reveal delay={0.15}>
+              <div className="mt-14 grid grid-cols-3 gap-6 max-w-xl mx-auto">
+                {[['+2,300','años de historia bajo tus pies'],['100%','ingredientes de temporada'],['1','vista irrepetible']].map(([n,t])=>(
+                  <div key={t}>
+                    <p className="font-display text-4xl md:text-5xl text-sauko-amber">{n}</p>
+                    <p className="text-xs text-sauko-cream/50 mt-2 leading-snug">{t}</p>
+                  </div>
+                ))}
+              </div>
+            </Reveal>
+          </div>
+        </section>
+      );
+    }
+
+    /* ============================ CTA RESERVAS ============================ */
+    function Reservas() {
+      return (
+        <section id="reservas" className="relative py-24 px-5">
+          <Reveal>
+            <div className="mx-auto max-w-4xl text-center rounded-3xl border border-sauko-gold/20 bg-gradient-to-br from-sauko-plum/40 via-ink to-sauko-clay/20 p-10 md:p-16">
+              <h2 className="font-display text-4xl md:text-6xl text-sauko-cream text-balance">Tu mesa frente a la pirámide te espera</h2>
+              <p className="mt-5 text-sauko-cream/65 font-light max-w-lg mx-auto">Reserva con anticipación para asegurar la mejor hora: el atardecer.</p>
+              <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
+                <Boton variant="solid" href="tel:+522220000000">Llamar para reservar</Boton>
+                <Boton variant="ghost" href="https://wa.me/522220000000" target="_blank" rel="noopener">WhatsApp</Boton>
+              </div>
+            </div>
+          </Reveal>
+        </section>
+      );
+    }
+
+    /* ============================ FOOTER ============================ */
+    function Footer() {
+      return (
+        <footer className="border-t border-white/5 py-12 px-5">
+          <div className="mx-auto max-w-7xl flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="text-center md:text-left">
+              <p className="font-display text-2xl text-sauko-cream">Sauko</p>
+              <p className="text-sauko-cream/40 text-sm mt-1">Frente a la Gran Pirámide · Cholula, Puebla</p>
+            </div>
+            <div className="flex gap-6 text-sm text-sauko-cream/50">
+              <a href="#" className="hover:text-sauko-amber">Instagram</a>
+              <a href="#" className="hover:text-sauko-amber">Facebook</a>
+              <a href="#menu" className="hover:text-sauko-amber">Menú</a>
+            </div>
+            <p className="text-sauko-cream/30 text-xs">© 2026 Sauko. Hecho con vista al atardecer.</p>
+          </div>
+        </footer>
+      );
+    }
+
+    /* ============================ APP ============================ */
+    function App() {
+      return (
+        <>
+          <Navbar />
+          <main>
+            <Hero />
+            <Menu />
+            <Ubicacion />
+            <Historia />
+            <Reservas />
+          </main>
+          <Footer />
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
